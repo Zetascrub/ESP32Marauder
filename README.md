@@ -38,13 +38,13 @@ The Mini v3's one-tap **Wardriving** session also saves directed, named probe re
 
 ### Import Wi-Fi networks from the SD card
 
-To avoid entering a password with the Mini's buttons, create `/wifi_import.json` at the SD card root before booting. It accepts one to five networks:
+The Mini's USB connection is serial; use an SD card reader to add or edit files. To avoid entering a password with the Mini's buttons, put a JSON file at the SD card root. A file named `wifi_import.example.json` is a safe template that the firmware ignores. Fill in the fields, then rename it to `/wifi_import.json` when ready. The file accepts one to five networks:
 
 ```json
-{"networks":[{"ssid":"Example WiFi","psk":"example-password"}]}
+{"networks":[{"ssid":"","psk":""}]}
 ```
 
-On boot, the Mini v3 imports these profiles into its existing saved-Wi-Fi settings, then reads the settings back from device flash. It removes the SD file only when every profile matches. If the file is invalid, there are too many profiles for the five saved slots, saving fails, or SD removal fails, it reports the reason over serial and leaves the file for correction. Existing profiles with the same SSID are updated. Importing does not test the network connection; **Join Saved WiFi** or **Upload All > Wombat** will try the saved profile later. Passwords must be 8–63 characters, and SSIDs must be 1–32 bytes. Keep the JSON file out of Git and delete any copies made on your computer. Removing the SD file is not a secure erase of its flash blocks, and the saved profiles remain in the Mini's device flash.
+On boot, the Mini v3 imports these profiles into its existing saved-Wi-Fi settings, then reads the settings back from device flash. It removes `/wifi_import.json` only when every profile matches. If the file is invalid, there are too many profiles for the five saved slots, saving fails, or SD removal fails, it reports the reason over serial and leaves the file for correction. Existing profiles with the same SSID are updated. Importing does not test the network connection; **Join Saved WiFi** or **Upload All > Wombat** will try the saved profile later. Passwords must be 8–63 characters, and SSIDs must be 1–32 bytes. Keep the JSON file out of Git and delete any copies made on your computer. Removing the SD file is not a secure erase of its flash blocks, and the saved profiles remain in the Mini's device flash.
 
 ### Build and install the Mini v3 firmware
 
@@ -73,6 +73,8 @@ esptool --chip esp32c5 --port '<PORT>' --baud 460800 write-flash 0x10000 build/o
 ```
 
 Check for esptool's verified hash, then confirm on the device that the display boots, the buttons navigate, and **Wardriving** appears first on the main menu and opens the scan screen. A successful compile or flash verification alone does not prove the display and controls work.
+
+On November 14, 2026, an app-only build of this Mini v3 firmware booted on an ESP32-C5 rev 1 device: Wardriving ran, the buttons responded, and serial showed access-point and BLE activity. The SD Wi-Fi import path has not yet been tested with a real credential file.
 
 ## FCC module identifiers
 
