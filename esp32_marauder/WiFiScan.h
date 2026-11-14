@@ -243,6 +243,7 @@
 #define WIGLE_UPLOAD 0
 #define WDG_UPLOAD   1
 #define BOTH_UPLOAD  2
+#define WOMBAT_UPLOAD 3
 
 extern EvilPortal evil_portal_obj;
 
@@ -328,8 +329,8 @@ static NimBLEAddress pendingAddress(
     BLE_ADDR_PUBLIC
 );
 
-bool connectionPending = false;
-bool operationInProgress = false;
+extern bool connectionPending;
+extern bool operationInProgress;
 #endif
 
 #pragma pack(push, 1)
@@ -786,8 +787,12 @@ class WiFiScan
 
     bool wigleUpload(String filePath);
     bool wdgwarsUpload(String filePath);
+    bool wombatUpload(String filePath);
     void writeSidecar(String filePath, String service);
-    bool sidecarExists(String filePath, String service); 
+    bool sidecarExists(String filePath, String service);
+    void archiveUploaded(String filePath);
+    void autoUploadPending(uint8_t dest);
+    bool auto_uploading = false;
     #ifdef HAS_SCREEN
       void drawUploadProgress(const char* service, uint8_t percent, bool waiting = false);
     #endif
@@ -1106,6 +1111,8 @@ class WiFiScan
     wifi_config_t ap_config;
 
     bool uploadFile(String filePath, bool retry = false, uint8_t upload_type = WIGLE_UPLOAD);
+    bool autoUploadEnabled();
+    void setAutoUpload(bool on);
     String checkEmptyProbe(String essid);
     bool checkFlockOUI(const uint8_t mac[6]);
     bool startWiFi(String ssid, String password, bool gui = true);

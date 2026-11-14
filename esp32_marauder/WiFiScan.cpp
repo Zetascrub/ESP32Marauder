@@ -12,7 +12,17 @@
 #include "BeaconFrame.h"
 #include "WdgResponse.h"
 #include "UploadStreamBuffer.h"
+#include "WombatRootCA.h"
+#include "WombatHost.h"
+#include "WardriveProbe.h"
 #include "CensorText.h"
+#include <time.h>
+#include <ctype.h>
+
+#ifdef HAS_BT
+bool connectionPending = false;
+bool operationInProgress = false;
+#endif
 #include "lang_var.h"
 #include <esp_ota_ops.h>
 
@@ -33,6 +43,44 @@ int num_beacon = 0;
 int num_deauth = 0;
 int num_probe = 0;
 int num_eapol = 0;
+
+#if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+extern GpsInterface gps_obj;
+namespace {
+// shortcut: 31 queued probes may drop during a burst; enlarge if field logs report drops.
+WardriveProbeQueue wardrive_probe_queue;
+portMUX_TYPE wardrive_probe_mux = portMUX_INITIALIZER_UNLOCKED;
+File wardrive_probe_file;
+
+void drainWardriveProbes() {
+  if (!wardrive_probe_file) return;
+  WardriveProbeEvent event;
+  bool wrote = false;
+  while (true) {
+    portENTER_CRITICAL(&wardrive_probe_mux);
+    const bool available = wardrive_probe_queue.pop(event);
+    portEXIT_CRITICAL(&wardrive_probe_mux);
+    if (!available) break;
+    if (!gps_obj.getFixStatus()) continue;
+    String name = "\"";
+    for (uint8_t i = 0; i < event.name_length; i++) {
+      if (event.name[i] == '"') name += "\"\"";
+      else name += static_cast<char>(event.name[i]);
+    }
+    name += '"';
+    String line = macToString(event.mac) + "," + name + ",," + gps_obj.getDatetime() + "," +
+                  String(event.channel) + "," + String(wigleFrequencyMHz(event.channel)) + "," +
+                  String(event.rssi) + "," + gps_obj.getLat() + "," + gps_obj.getLon() + "," +
+                  String(gps_obj.getAlt()) + "," + String(gps_obj.getAccuracy()) +
+                  ",,,WIFI-PROBE\n";
+    if (wardrive_probe_file.print(line) != line.length())
+      Serial.println("[WARDRIVE] Probe log write failed");
+    wrote = true;
+  }
+  if (wrote) wardrive_probe_file.flush();
+}
+}
+#endif
 
 // https://mbed-tls.readthedocs.io/en/latest/kb/how-to/mbedtls-tutorial/
 static mbedtls_ecp_group ecp_group;
@@ -2530,6 +2578,10 @@ bool WiFiScan::joinWiFi(String ssid, String password, bool gui, bool save_creden
     }
   }
 
+  // QoL: on a fresh connect, upload any pending wardrive logs (opt-in via sentinel).
+  if (this->autoUploadEnabled())
+    this->autoUploadPending(WOMBAT_UPLOAD);
+
   return true;
 }
 
@@ -3179,6 +3231,15 @@ bool WiFiScan::shutdownBLE() {
 
 // Function to stop all wifi scans
 void WiFiScan::StopScan(uint8_t scan_mode) {
+  #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+    if (currentScanMode == WIFI_SCAN_WAR_DRIVE) {
+      drainWardriveProbes();
+      if (wardrive_probe_file) wardrive_probe_file.close();
+      if (wardrive_probe_queue.dropped())
+        Serial.printf("[WARDRIVE] Probe queue dropped %lu requests\n",
+                      static_cast<unsigned long>(wardrive_probe_queue.dropped()));
+    }
+  #endif
   #ifdef HAS_SD
     if ((currentScanMode == REMOTE_ID_SCAN_ALL) ||
         (currentScanMode == REMOTE_ID_SCAN_TARGET))
@@ -4950,6 +5011,15 @@ void WiFiScan::RunInfo() {
   const esp_partition_t* running_partition = esp_ota_get_running_partition();
   const String app_partition = running_partition ? String(running_partition->label) : String("unknown");
 
+  String sd_info = "SD: n/a";
+  #ifdef HAS_SD
+    if (sd_obj.supported) {
+      uint64_t sd_total = SD.totalBytes();
+      sd_info = "SD: " + String((uint32_t)(SD.usedBytes() / 1048576)) + "/" +
+                String((uint32_t)(sd_total / 1048576)) + "MB used";
+    }
+  #endif
+
   #ifdef HAS_SCREEN
     display_obj.tft.setTextWrap(false);
     display_obj.tft.setFreeFont(NULL);
@@ -4961,6 +5031,7 @@ void WiFiScan::RunInfo() {
     display_obj.tft.println("Hardware: " + (String)HARDWARE_NAME);
     display_obj.tft.println("FCC ID: " + (String)FCC_ID);
     display_obj.tft.println("App partition: " + app_partition);
+    display_obj.tft.println(sd_info);
     display_obj.tft.println(text_table4[22] + (String)esp_get_idf_version());
   #endif
 
@@ -4969,6 +5040,7 @@ void WiFiScan::RunInfo() {
   Serial.println("Hardware: " + (String)HARDWARE_NAME);
   Serial.println("FCC ID: " + (String)FCC_ID);
   Serial.println("App partition: " + app_partition);
+  Serial.println(sd_info);
   Serial.println(text_table4[22] + (String)esp_get_idf_version());
 
   if (this->wsl_bypass_enabled) {
@@ -6490,6 +6562,24 @@ void WiFiScan::executeWarDrive() {
       if (!this->ble_scanning) {
         // BLE just finished, or WiFi channel cycle completed without BLE support.
         // Start the next WiFi channel cycle.
+        #ifdef HAS_SD
+          // Warn when the SD card is nearly full so wardrive logging doesn't silently stop.
+          // 30s cadence: SD.usedBytes() scans the FAT, so keep it infrequent.
+          static uint32_t last_sd_free_check = 0;
+          if (sd_obj.supported && millis() - last_sd_free_check > 30000) {
+            last_sd_free_check = millis();
+            uint64_t sd_total = SD.totalBytes();
+            if (sd_total > 0 && sd_total - SD.usedBytes() < 5ULL * 1024 * 1024) {
+              Serial.println("[WARDRIVE] SD card nearly full (<5MB free)");
+              #ifdef HAS_SCREEN
+                display_obj.tft.fillRect(0, 0, TFT_WIDTH, 10, TFT_RED);
+                display_obj.tft.setTextColor(TFT_WHITE, TFT_RED);
+                display_obj.tft.drawString("SD LOW <5MB", 2, 1, 1);
+                display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+              #endif
+            }
+          }
+        #endif
         if (this->wardrive_channel_index >= wardrive_channel_count)
           this->wardrive_channel_index = 0;
 
@@ -6858,6 +6948,20 @@ void WiFiScan::RunBeaconScan(uint8_t scan_mode, uint16_t color) {
       if (gps_obj.getGpsModuleStatus()) {
         startLog("wardrive");
         buffer_obj.append(this->header_line);
+        #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+          wardrive_probe_queue.reset();
+          String probe_path = buffer_obj.getFileName();
+          if (SD.exists(probe_path) && probe_path.startsWith("/wardrive_") && probe_path.endsWith(".log")) {
+            probe_path.replace("/wardrive_", "/wombat_probes_");
+            probe_path.replace(".log", ".csv");
+            wardrive_probe_file = SD.open(probe_path, FILE_WRITE);
+            if (wardrive_probe_file) {
+              wardrive_probe_file.print(this->header_line);
+              wardrive_probe_file.flush();
+            }
+            else Serial.println("[WARDRIVE] Could not open Wombat probe log");
+          }
+        #endif
         this->openPoiFile();
       } else {
         return;
@@ -9291,10 +9395,23 @@ void WiFiScan::beaconSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type
     }
   }
   else if (wifi_scan_obj.currentScanMode == WIFI_SCAN_WAR_DRIVE) {
+    #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+      WardriveProbeEvent event = {};
+      if (wardrive_probe_file && type == WIFI_PKT_MGMT && len >= 30 &&
+          gps_obj.getFixStatus() && !wifi_scan_obj.isGeofencePaused() &&
+          directedWardriveProbe(snifferPacket->payload, len - 4, event)) {
+        event.rssi = snifferPacket->rx_ctrl.rssi;
+        event.channel = snifferPacket->rx_ctrl.channel;
+        portENTER_CRITICAL(&wardrive_probe_mux);
+        wardrive_probe_queue.push(event, millis());
+        portEXIT_CRITICAL(&wardrive_probe_mux);
+      }
+    #endif
     if (type == WIFI_PKT_MGMT) {
       bool do_write = false;
       len -= 4;
-      if (snifferPacket->payload[0] == 0x40) {
+      if (snifferPacket->payload[0] == 0x40 && len >= 26 &&
+          snifferPacket->payload[24] == 0 && 26 + snifferPacket->payload[25] <= len) {
         String probe_req_essid;
 
         for (int i = 0; i < snifferPacket->payload[25]; i++)
@@ -11989,7 +12106,66 @@ uint16_t WiFiScan::rssiToColor(int8_t rssi) {
     }
   }
 
+  // Move an uploaded log (+ its sidecars) into /uploaded/ so the log menu stays short.
+  void WiFiScan::archiveUploaded(String filePath) {
+    if (!SD.exists("/uploaded") && !SD.mkdir("/uploaded")) {
+      Serial.println("[UPLOAD] Could not create /uploaded");
+      return;
+    }
+    String dest = "/uploaded/" + filePath.substring(filePath.lastIndexOf('/') + 1);
+    if (!SD.rename(filePath, dest)) {
+      Serial.println("[UPLOAD] Could not archive " + filePath);
+      return;
+    }
+    const char* suffixes[] = {".wigle", ".wdg", ".wombat", ".gpx"};
+    for (auto s : suffixes)
+      if (SD.exists(filePath + s)) SD.rename(filePath + s, dest + s);
+    Serial.println("[UPLOAD] Archived to " + dest);
+  }
+
+  // Sentinel file toggles auto-upload-on-connect (reuses the SD-config pattern).
+  bool WiFiScan::autoUploadEnabled() {
+    #ifdef HAS_SD
+      return sd_obj.supported && SD.exists("/auto_upload.txt");
+    #else
+      return false;
+    #endif
+  }
+  void WiFiScan::setAutoUpload(bool on) {
+    #ifdef HAS_SD
+      if (!sd_obj.supported) return;
+      if (on) { File f = SD.open("/auto_upload.txt", FILE_WRITE); if (f) f.close(); }
+      else SD.remove("/auto_upload.txt");
+    #endif
+  }
+
+  // Upload pending (un-archived) wardrive logs to one destination; each success auto-archives.
+  void WiFiScan::autoUploadPending(uint8_t dest) {
+    #ifdef HAS_SD
+      if (this->auto_uploading || !sd_obj.supported) return;
+      this->auto_uploading = true;
+      LinkedList<String>* files = new LinkedList<String>();
+      sd_obj.listDirToLinkedList(files, "/");
+      for (int i = 0; i < files->size(); i++) {
+        String f = files->get(i);
+        if ((f.startsWith("wardrive_") || f.startsWith("wigle-") ||
+             (dest == WOMBAT_UPLOAD && f.startsWith("wombat_probes_") && f.endsWith(".csv"))) &&
+            !f.endsWith(".wigle") && !f.endsWith(".wdg") &&
+            !f.endsWith(".wombat") && !f.endsWith(".gpx")) {
+          Serial.println("[AUTO-UPLOAD] " + f);
+          this->uploadFile("/" + f, false, dest);
+        }
+      }
+      delete files;
+      this->auto_uploading = false;
+    #endif
+  }
+
   bool WiFiScan::uploadFile(String filePath, bool retry, uint8_t upload_type) {
+    if (filePath.startsWith("/wombat_probes_") && upload_type != WOMBAT_UPLOAD) {
+      Serial.println("[UPLOAD] Probe CSV is Wombat-only");
+      return false;
+    }
     #ifdef HAS_SCREEN
     display_obj.clearScreen();
     display_obj.showCenterText(String("Uploading " + filePath).c_str(), TFT_HEIGHT / 2, true);
@@ -12001,9 +12177,11 @@ uint16_t WiFiScan::rssiToColor(int8_t rssi) {
 
     bool wigle_already = !retry && this->sidecarExists(filePath, "wigle");
     bool wdg_already   = !retry && this->sidecarExists(filePath, "wdg");
+    bool wombat_already = !retry && this->sidecarExists(filePath, "wombat");
 
     bool wigle_ok = wigle_already;
     bool wdg_ok   = wdg_already;
+    bool wombat_ok = wombat_already;
 
     if ((upload_type == WIGLE_UPLOAD) || (upload_type == BOTH_UPLOAD)) {
       if (!wigle_already) {
@@ -12035,14 +12213,115 @@ uint16_t WiFiScan::rssiToColor(int8_t rssi) {
       }
     }
 
+    if (upload_type == WOMBAT_UPLOAD && !wombat_already) {
+      wombat_ok = this->wombatUpload(filePath);
+      if (wombat_ok) this->writeSidecar(filePath, "wombat");
+    }
+
+    bool success = false;
     if (upload_type == WIGLE_UPLOAD)
-      return wigle_ok;
+      success = wigle_ok;
     else if (upload_type == WDG_UPLOAD)
-      return wdg_ok;
+      success = wdg_ok;
     else if (upload_type == BOTH_UPLOAD)
-      return wigle_ok && wdg_ok;
-    
-    return false;
+      success = wigle_ok && wdg_ok;
+    else if (upload_type == WOMBAT_UPLOAD)
+      success = wombat_ok;
+
+    if (success) this->archiveUploaded(filePath);
+    return success;
+  }
+
+  bool WiFiScan::wombatUpload(String filePath) {
+    File hostFile = SD.open("/wombat_host.txt", FILE_READ);
+    if (!hostFile || hostFile.size() > 256) {
+      if (hostFile) hostFile.close();
+      Serial.println("[WOMBAT] Missing or invalid /wombat_host.txt");
+      return false;
+    }
+    String host = hostFile.readStringUntil('\n');
+    hostFile.close();
+    host.trim();
+    if (!validWombatHost(host.c_str(), host.length())) {
+      Serial.println("[WOMBAT] Invalid host in /wombat_host.txt");
+      return false;
+    }
+    File tokenFile = SD.open("/wombat_token.txt", FILE_READ);
+    if (!tokenFile) {
+      Serial.println("[WOMBAT] Missing /wombat_token.txt");
+      return false;
+    }
+    String token = tokenFile.readStringUntil('\n');
+    tokenFile.close();
+    token.trim();
+    if (token.length() != 64) {
+      Serial.println("[WOMBAT] Invalid token length");
+      return false;
+    }
+    for (size_t i = 0; i < token.length(); i++) {
+      char c = token[i];
+      if (!isxdigit(static_cast<unsigned char>(c))) {
+        Serial.println("[WOMBAT] Invalid token format");
+        return false;
+      }
+    }
+
+    File file = SD.open(filePath, FILE_READ);
+    bool wardriveLog = filePath.startsWith("/wardrive_") && filePath.endsWith(".log");
+    if (!file || (!wardriveLog && !filePath.endsWith(".csv")) || file.size() == 0 || file.size() > 50UL * 1024 * 1024) {
+      if (file) file.close();
+      Serial.println("[WOMBAT] Expected a CSV under 50 MB");
+      return false;
+    }
+    String filename = filePath.substring(filePath.lastIndexOf('/') + 1);
+    if (wardriveLog) filename = filename.substring(0, filename.length() - 4) + ".csv";
+    for (size_t i = 0; i < filename.length(); i++) {
+      char c = filename[i];
+      if (!isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') {
+        file.close();
+        Serial.println("[WOMBAT] Invalid filename");
+        return false;
+      }
+    }
+
+    configTime(0, 0, "pool.ntp.org");
+    uint32_t started = millis();
+    while (time(nullptr) < 1700000000 && millis() - started < 10000) delay(100);
+    if (time(nullptr) < 1700000000) {
+      file.close();
+      Serial.println("[WOMBAT] Clock unavailable for TLS");
+      return false;
+    }
+
+    client->setCACert(WOMBAT_ROOT_CA);
+    client->setTimeout(10000);
+    if (!client->connect(host.c_str(), 443)) {
+      file.close();
+      client->stop();
+      Serial.println("[WOMBAT] TLS connection failed");
+      return false;
+    }
+    client->println("POST /api/device-upload HTTP/1.1");
+    client->println(String("Host: ") + host);
+    client->println("Content-Type: text/csv");
+    client->println("X-Filename: " + filename);
+    client->println("Authorization: Bearer " + token);
+    client->println("Connection: close");
+    client->println("Content-Length: " + String(file.size()));
+    client->println();
+
+    marauder::UploadStreamBuffer buffer;
+    bool sent = static_cast<bool>(buffer);
+    while (sent && file.available()) {
+      size_t count = file.read(buffer.data(), buffer.size());
+      sent = count && client->write(buffer.data(), count) == count;
+    }
+    file.close();
+    String status = sent ? client->readStringUntil('\n') : String();
+    client->stop();
+    bool ok = status.startsWith("HTTP/1.1 200 ") || status.startsWith("HTTP/1.0 200 ");
+    Serial.println(ok ? "[WOMBAT] Upload OK" : "[WOMBAT] Upload failed: " + status);
+    return ok;
   }
 
   // Upload one log file to WDG Wars.
@@ -12633,6 +12912,9 @@ void WiFiScan::runFoxHunt(uint32_t currentTime) {
 // Function for updating scan status
 void WiFiScan::main(uint32_t currentTime)
 {
+  #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+    if (currentScanMode == WIFI_SCAN_WAR_DRIVE) drainWardriveProbes();
+  #endif
   // WiFi operations
   if ((currentScanMode == WIFI_SCAN_PROBE) ||
   (currentScanMode == WIFI_SCAN_AP) ||

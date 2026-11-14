@@ -321,7 +321,7 @@ uint32_t currentTime  = 0;
 #endif
 
 #ifdef HAS_C5_SD
-  SPIClass sharedSPI(SPI);
+  SPIClass &sharedSPI = SPI;
   SDInterface sd_obj = SDInterface(&sharedSPI, SD_CS);
 #endif
 
@@ -342,6 +342,13 @@ void setup()
   #endif
 
   #ifdef HAS_C5_SD
+    #ifdef MARAUDER_MINI_V3
+      // The Mini v3 display and SD card must be deselected before SPI starts.
+      pinMode(TFT_CS, OUTPUT);
+      digitalWrite(TFT_CS, HIGH);
+      pinMode(SD_CS, OUTPUT);
+      digitalWrite(SD_CS, HIGH);
+    #endif
     sharedSPI.begin(SD_SCK, SD_MISO, SD_MOSI);
     delay(100);
   #endif
@@ -386,6 +393,11 @@ void setup()
     if (!psramInit()) {
       Serial.println(F("PSRAM not available"));
     }
+  #endif
+
+  #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+    if (!sd_obj.initSD())
+      Serial.println(F("SD Card NOT Supported"));
   #endif
 
   #ifdef HAS_SIMPLEX_DISPLAY
@@ -439,7 +451,7 @@ void setup()
   }
 
   #ifndef HAS_SIMPLEX_DISPLAY
-    #if defined(HAS_SD)
+    #if defined(HAS_SD) && !defined(MARAUDER_MINI_V3)
       // Do some SD stuff
       if(!sd_obj.initSD())
         Serial.println(F("SD Card NOT Supported"));
@@ -500,7 +512,45 @@ void setup()
   menu_function_obj.changeMenu(menu_function_obj.current_menu);*/
 
   wifi_scan_obj.StartScan(WIFI_SCAN_OFF);
-  
+
+  #if defined(HAS_GPS) && defined(BOOT_TO_WARDRIVE)
+    // Personal spin: wait for a GPS fix, then auto-start Wardrive.
+    // Only triggers when a GPS module is actually detected; press the
+    // center button at any time to skip and drop to the normal menu.
+    if (gps_obj.getGpsModuleStatus()) {
+      bool bail = false;
+      #ifdef HAS_SCREEN
+        const int16_t w = display_obj.tft.width();
+        const int16_t h = display_obj.tft.height();
+        display_obj.clearScreen();
+        display_obj.tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        display_obj.tft.drawCentreString("Wardrive", w / 2, 8, 1);
+        display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        display_obj.tft.drawCentreString("Press C to skip", w / 2, h - 14, 1);
+      #endif
+      while (!gps_obj.getFixStatus() && !bail) {
+        gps_obj.main();
+        #ifdef HAS_SCREEN
+          display_obj.tft.setTextColor(TFT_WHITE, TFT_BLACK);
+          display_obj.tft.drawCentreString("Waiting for GPS lock", w / 2, h / 2 - 8, 1);
+          display_obj.tft.drawCentreString("Sats: " + gps_obj.getNumSatsString() + "  ", w / 2, h / 2 + 4, 1);
+        #endif
+        #if defined(HAS_BUTTONS) && (C_BTN >= 0)
+          if (c_btn.justPressed()) bail = true;
+        #endif
+        delay(50);
+      }
+      if (!bail) {
+        #ifdef HAS_SCREEN
+          display_obj.clearScreen();
+        #endif
+        menu_function_obj.drawStatusBar();
+        wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE, TFT_GREEN);
+      }
+      // On bail, scan stays OFF and the loop draws the normal menu.
+    }
+  #endif
+
   cli_obj.RunSetup();
 }
 

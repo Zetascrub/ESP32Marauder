@@ -8,3 +8,11 @@ coverage.xml
 esp32_marauder/.vscode/settings.json
 __pycache__/
 *.pyc
+
+# Local device backups and generated Mini v3 diagnostics may contain credentials.
+stock-backup/
+/wombat_host.txt
+/wombat_token.txt
+build/*
+!build/build_mini_v3.sh
+!build/fix_tft_and_rebuild.sh

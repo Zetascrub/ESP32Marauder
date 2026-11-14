@@ -349,8 +349,8 @@ void Display::drawBootSplash() {
   tft.setTextWrap(false);
   tft.setFreeFont(NULL);
   tft.setTextSize(layout.text_size);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawCentreString("ESP32 Marauder", width / 2, layout.title_y, 1);
+  tft.setTextColor(ZETA_ACCENT, TFT_BLACK);
+  tft.drawCentreString("ZetaScrub", width / 2, layout.title_y, 1);
 
   const uint32_t source_x_step = layout.logo_width > 1
       ? (static_cast<uint32_t>(JCMK_LOGO_WIDTH - 1) << 8) /
@@ -369,7 +369,7 @@ void Display::drawBootSplash() {
       if (white && run_start < 0) run_start = x;
       if (!white && run_start >= 0) {
         tft.drawFastHLine(layout.logo_x + run_start, layout.logo_y + y,
-                          x - run_start, TFT_WHITE);
+                          x - run_start, ZETA_ACCENT);
         run_start = -1;
       }
     }
@@ -377,7 +377,7 @@ void Display::drawBootSplash() {
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.drawCentreString(version_number, width / 2, layout.version_y, 1);
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextColor(ZETA_ACCENT, TFT_BLACK);
   tft.drawCentreString("Initializing...", width / 2, layout.status_y, 1);
   tft.setTextSize(1);
 }

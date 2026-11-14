@@ -68,6 +68,10 @@
 
 #define MARAUDER_VERSION "v1.20.0"
 
+  // Personal spin: ZetaScrub cyan accent (RGB565). Used by the boot splash
+  // and (for Mini v3) the status bar.
+  #define ZETA_ACCENT 0x061F
+
   #define GRAPH_REFRESH   100
 
   #define TRACK_EVICT_SEC 90 // Seconds before marking tracked MAC as tombstone
@@ -719,6 +723,9 @@
     #define HAS_IDF_3
     //#define HAS_SIMPLEX_DISPLAY
     #define HAS_DIRECT_UPLOAD
+    // Personal spin: boot straight into Wardrive once GPS locks.
+    // Comment this out to boot to the normal menu instead.
+    #define BOOT_TO_WARDRIVE
   #endif
 
   #ifdef MARAUDER_POOM
@@ -770,7 +777,7 @@
   // particular board does not expose PSRAM.
   #if !defined(HAS_PSRAM) && \
       !defined(MARAUDER_C5) && !defined(MARAUDER_T_DONGLE_C5) && \
-      !defined(XIAO_ESP32_C5) && !defined(DUAL_MINI_C5)
+      !defined(XIAO_ESP32_C5) && !defined(MARAUDER_MINI_V3) && !defined(DUAL_MINI_C5)
     #define MARAUDER_NO_PSRAM_MEMORY_PROFILE
   #endif
   //// END BOARD FEATURES
@@ -2385,15 +2392,16 @@
       #define CHAN_PER_PAGE 7
 
       #define SCREEN_CHAR_WIDTH 40
-      #define TFT_MISO 19
-      #define TFT_MOSI 23
-      #define TFT_SCLK 18
-      #define TFT_CS 27
-      #define TFT_DC 26
-      #define TFT_RST 5
-      #define TFT_BL 32
-      #define TOUCH_CS 21
-      #define SD_CS 4
+      // Mini v3 display and SD share the production ESP32-C5 SPI bus.
+      #define TFT_MISO 2
+      #define TFT_MOSI 7
+      #define TFT_SCLK 6
+      #define TFT_CS 23
+      #define TFT_DC 24
+      #define TFT_RST -1
+      #define TFT_BL 5
+      #define TOUCH_CS -1
+      #define SD_CS 10
 
       #define SCREEN_BUFFER
 
@@ -2453,7 +2461,7 @@
       #define GREENBUTTON_W (FRAME_W/2)
       #define GREENBUTTON_H FRAME_H
     
-      #define STATUSBAR_COLOR 0x4A49
+      #define STATUSBAR_COLOR ZETA_ACCENT // Personal spin: ZetaScrub cyan
     #endif
 
   #endif
@@ -2913,9 +2921,7 @@
       #define SD_CS 7
     #endif
 
-    #ifdef MARAUDER_MINI_V3
-      #define SD_CS 10
-    #endif
+    // MARAUDER_MINI_V3 defines SD_CS alongside its display wiring.
 
     #ifdef MARAUDER_POOM
       #define SD_CS 5

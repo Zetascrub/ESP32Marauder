@@ -1919,6 +1919,13 @@ bool MenuFunctions::textInput(char *buffer, size_t bufLen, const char *title)
 
       });
 
+      bool auto_on = wifi_scan_obj.autoUploadEnabled();
+      this->addNodes(&uploadLogsMenu, auto_on ? "Auto-Upload: ON" : "Auto-Upload: OFF", TFTGREEN, 0, [this, auto_on]() {
+        wifi_scan_obj.setAutoUpload(!auto_on);
+        this->buildUploadFileMenu();
+        this->changeMenu(&uploadLogsMenu, true);
+      });
+
       for (int i = 0; i < sd_obj.sd_files->size(); i++) {
         File current_file = sd_obj.getFile("/" + sd_obj.sd_files->get(i));
         if (sd_obj.sd_files->get(i).startsWith("wardrive_") || sd_obj.sd_files->get(i).startsWith("wigle-")) {
@@ -4163,6 +4170,35 @@ void MenuFunctions::buildWiFiGeneralMenu()
       this->changeMenu(uploadAllMenu.parentMenu, true);
     });
 
+    this->addNodes(&uploadAllMenu, "Wombat", TFTLIGHTGREY, 0, [this]() {
+      if (!wifi_scan_obj.joinSavedWiFi(true)) {
+        display_obj.showCenterText("WiFi connect failed", TFT_HEIGHT / 2, true);
+      } else {
+        int attempted = 0;
+        int uploaded = 0;
+        for (int i = 0; i < sd_obj.sd_files->size(); i++) {
+          String name = sd_obj.sd_files->get(i);
+          if ((name.startsWith("wombat_probes_") && name.endsWith(".csv")) ||
+              (name.startsWith("wardrive_") && name.endsWith(".log")) ||
+              ((name.startsWith("wardrive_") || name.startsWith("wigle-")) && name.endsWith(".csv"))) {
+            attempted++;
+            bool ok = wifi_scan_obj.uploadFile("/" + name, false, WOMBAT_UPLOAD);
+            if (ok) uploaded++;
+            if (!ok) break;
+          }
+        }
+        String result = attempted == 0 ? "No wardrive logs" :
+          "Wombat " + String(uploaded) + "/" + String(attempted);
+        display_obj.showCenterText(result.c_str(), TFT_HEIGHT / 2, true);
+        Serial.println("[WOMBAT] " + result);
+        WiFi.disconnect(true);
+        delay(100);
+        wifi_scan_obj.StartScan(WIFI_SCAN_OFF, TFT_RED);
+      }
+      delay(4000);
+      this->changeMenu(uploadAllMenu.parentMenu, true);
+    });
+
     deleteAllMenu.parentMenu = &uploadLogsMenu;
     this->addNodes(&deleteAllMenu, "No", TFTLIGHTGREY, 0, [this]() {
       this->changeMenu(deleteAllMenu.parentMenu, true);
@@ -4323,6 +4359,19 @@ void MenuFunctions::buildWiFiGeneralMenu()
 
       delay(2000);
 
+      this->changeMenu(&actionMenu, true);
+    });
+    this->addNodes(&actionMenu, "Wombat", TFTLIGHTGREY, 0, [this]() {
+      if (!wifi_scan_obj.joinSavedWiFi(true)) {
+        display_obj.showCenterText("WiFi connect failed", TFT_HEIGHT / 2, true);
+      } else {
+        bool ok = wifi_scan_obj.uploadFile("/" + sd_obj.selected_file_name, false, WOMBAT_UPLOAD);
+        display_obj.showCenterText(ok ? "Wombat OK" : "Wombat failed", TFT_HEIGHT / 2, true);
+        WiFi.disconnect(true);
+        delay(100);
+        wifi_scan_obj.StartScan(WIFI_SCAN_OFF, TFT_RED);
+      }
+      delay(2000);
       this->changeMenu(&actionMenu, true);
     });
   #endif
@@ -5006,6 +5055,15 @@ void MenuFunctions::buildLazyMenu(Menu* menu)
 
   switch (menu->buildKind) {
     case MenuBuildKind::MAIN:
+      #if defined(MARAUDER_MINI_V3) && defined(HAS_GPS)
+        if (gps_obj.getGpsModuleStatus()) {
+          this->addNodes(menu, "Wardriving", TFTGREEN, BEACON_SNIFF, [this]() {
+            display_obj.clearScreen();
+            this->drawStatusBar();
+            wifi_scan_obj.StartScan(WIFI_SCAN_WAR_DRIVE, TFT_GREEN);
+          });
+        }
+      #endif
       this->addNodes(menu, "Recon", TFTMAGENTA, GENERAL_APPS, [this]() {
         this->changeMenu(&reconMenu, true);
       });
