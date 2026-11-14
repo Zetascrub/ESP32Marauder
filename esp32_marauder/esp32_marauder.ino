@@ -325,6 +325,106 @@ uint32_t currentTime  = 0;
   SDInterface sd_obj = SDInterface(&sharedSPI, SD_CS);
 #endif
 
+#if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+static void importWifiProfilesFromSd() {
+  constexpr const char* path = "/wifi_import.json";
+  if (!sd_obj.supported || !SD.exists(path)) return;
+
+  File file = SD.open(path, FILE_READ);
+  if (!file || file.size() == 0 || file.size() > 1024) {
+    if (file) file.close();
+    Serial.println(F("[WiFi import] Invalid file size; SD file retained"));
+    return;
+  }
+  StaticJsonDocument<1024> import;
+  const DeserializationError error = deserializeJson(import, file);
+  file.close();
+  JsonArray networks = import["networks"].as<JsonArray>();
+  if (error || networks.isNull() || networks.size() == 0 ||
+      networks.size() > MAX_SAVED_WIFI_PROFILES) {
+    Serial.println(F("[WiFi import] Invalid JSON; SD file retained"));
+    return;
+  }
+
+  const uint8_t saved_count = settings_obj.getSavedWifiCount();
+  uint8_t new_count = 0;
+  for (size_t i = 0; i < networks.size(); i++) {
+    const char* ssid = networks[i]["ssid"].as<const char*>();
+    const char* psk = networks[i]["psk"].as<const char*>();
+    if (!ssid || !psk || strlen(ssid) == 0 || strlen(ssid) > 32 ||
+        strlen(psk) < 8 || strlen(psk) > 63) {
+      Serial.println(F("[WiFi import] Invalid profile; SD file retained"));
+      return;
+    }
+    for (size_t j = 0; j < i; j++) {
+      if (strcmp(ssid, networks[j]["ssid"].as<const char*>()) == 0) {
+        Serial.println(F("[WiFi import] Duplicate SSID; SD file retained"));
+        return;
+      }
+    }
+    bool existing = false;
+    for (uint8_t j = 0; j < saved_count; j++) {
+      String saved_ssid, saved_psk;
+      if (!settings_obj.loadSavedWifiCredential(j, saved_ssid, saved_psk)) {
+        Serial.println(F("[WiFi import] Cannot read saved profiles; SD file retained"));
+        return;
+      }
+      if (saved_ssid == ssid) existing = true;
+    }
+    if (!existing) new_count++;
+  }
+  if (saved_count + new_count > MAX_SAVED_WIFI_PROFILES) {
+    Serial.println(F("[WiFi import] Profile slots full; SD file retained"));
+    return;
+  }
+
+  for (JsonObject network : networks) {
+    const WifiCredentialSaveResult result = settings_obj.saveWifiCredential(
+        network["ssid"].as<String>(), network["psk"].as<String>());
+    if (result != WIFI_CREDENTIAL_SAVED && result != WIFI_CREDENTIAL_UPDATED) {
+      Serial.println(F("[WiFi import] Save failed; SD file retained"));
+      return;
+    }
+  }
+
+  // Read the flash file afresh; the in-memory settings cache is not proof of persistence.
+  File saved_file = SPIFFS.open("/settings.json", FILE_READ);
+  DynamicJsonDocument saved(JSON_SETTING_SIZE);
+  const bool readable = saved_file && !deserializeJson(saved, saved_file);
+  if (saved_file) saved_file.close();
+  JsonArray saved_networks;
+  if (readable) {
+    for (JsonObject setting : saved["Settings"].as<JsonArray>()) {
+      if (strcmp(setting["name"] | "", SAVED_WIFI_KEY_NAME) == 0) {
+        saved_networks = setting["value"].as<JsonArray>();
+        break;
+      }
+    }
+  }
+  bool verified = readable && !saved_networks.isNull();
+  for (JsonObject network : networks) {
+    bool found = false;
+    for (JsonObject saved_network : saved_networks) {
+      if (strcmp(saved_network["ssid"] | "", network["ssid"].as<const char*>()) == 0 &&
+          strcmp(saved_network["password"] | "", network["psk"].as<const char*>()) == 0) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) verified = false;
+  }
+  if (!verified) {
+    Serial.println(F("[WiFi import] Flash verification failed; SD file retained"));
+    return;
+  }
+  if (!SD.remove(path)) {
+    Serial.println(F("[WiFi import] SD file removal failed"));
+    return;
+  }
+  Serial.printf("[WiFi import] Saved %u profile(s); SD file removed\n", unsigned(networks.size()));
+}
+#endif
+
 void setup()
 {
   randomSeed(esp_random());
@@ -449,6 +549,10 @@ void setup()
     Serial.println(F("Current settings format not supported. Installing new default settings..."));
     settings_obj.createDefaultSettings(SPIFFS);
   }
+
+  #if defined(MARAUDER_MINI_V3) && defined(HAS_SD)
+    importWifiProfilesFromSd();
+  #endif
 
   #ifndef HAS_SIMPLEX_DISPLAY
     #if defined(HAS_SD) && !defined(MARAUDER_MINI_V3)

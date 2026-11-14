@@ -13,6 +13,7 @@ __pycache__/
 stock-backup/
 /wombat_host.txt
 /wombat_token.txt
+/wifi_import.json
 build/*
 !build/build_mini_v3.sh
 !build/fix_tft_and_rebuild.sh

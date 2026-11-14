@@ -36,6 +36,16 @@ Save a 64-character hex Wombat device-upload token as `/wombat_token.txt` on the
 
 The Mini v3's one-tap **Wardriving** session also saves directed, named probe requests with a GPS fix to a separate `wombat_probes_*.csv` file on the SD card. **Upload All > Wombat**, `upload -d wombat`, and auto-upload include these files; WiGLE and WDG uploads keep using the ordinary AP/BLE wardrive logs. Wombat imports the probe rows as `WIFI-PROBE`. Empty-name probes are not useful for AP-name matching and are not logged. The radio listens on one channel at a time, so a session cannot capture every probe request.
 
+### Import Wi-Fi networks from the SD card
+
+To avoid entering a password with the Mini's buttons, create `/wifi_import.json` at the SD card root before booting. It accepts one to five networks:
+
+```json
+{"networks":[{"ssid":"Example WiFi","psk":"example-password"}]}
+```
+
+On boot, the Mini v3 imports these profiles into its existing saved-Wi-Fi settings, then reads the settings back from device flash. It removes the SD file only when every profile matches. If the file is invalid, there are too many profiles for the five saved slots, saving fails, or SD removal fails, it reports the reason over serial and leaves the file for correction. Existing profiles with the same SSID are updated. Importing does not test the network connection; **Join Saved WiFi** or **Upload All > Wombat** will try the saved profile later. Passwords must be 8–63 characters, and SSIDs must be 1–32 bytes. Keep the JSON file out of Git and delete any copies made on your computer. Removing the SD file is not a secure erase of its flash blocks, and the saved profiles remain in the Mini's device flash.
+
 ### Build and install the Mini v3 firmware
 
 This tree contains the Mini v3 hardware definition, so the external MiniV3 fork is not needed to recover its display pins. Keep `User_Setup_marauder_mini_v3.h`, `esp32_marauder/configs.h`, and `build/build_mini_v3.sh` with the source when committing or archiving this project. The hardware setup uses an ST7735 128×128 display on the ESP32-C5 SPI pins (MISO 2, MOSI 7, SCLK 6, CS 23, DC 24, backlight 5); the SD card uses CS 10. Do not select the original Mini setup: it caused a boot loop on this Mini v3. The `MARAUDER_MINI_V3` config enables GPS, SD, Bluetooth, PSRAM, and boot to wardriving. The main menu also has **Wardriving** at the top when the GPS module is present.
